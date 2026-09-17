@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "photo-coordinate-organizer"
+version = "0.1.0"
+description = "Organize marine survey photos and generate Excel manifests from GPS coordinate data."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "AutoRecap" }
+]
+keywords = ["survey", "photos", "utm", "excel", "gis", "marine"]
+dependencies = [
+  "Pillow>=10.0.0",
+  "openpyxl>=3.1.0",
+]
+
+[project.urls]
+Homepage = "https://example.com/"
+
+[project.scripts]
+photo-coordinate-organizer = "photo_coordinate_organizer:main"
+
+[tool.setuptools]
+py-modules = ["photo_coordinate_organizer"]
