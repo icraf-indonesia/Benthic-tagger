@@ -1,17 +1,17 @@
-# Photo Coordinate Organizer
+# Benthic Photo Tagger and Organizer
 
-This repository organizes marine survey photos by transect and point, matches them to GPS/waypoint coordinates, extracts EXIF metadata, and exports a structured Excel workbook with the same column layout and styling as the reference file.
+This repository organizes marine survey photos by transect and point, matches them to GPS coordinates, extracts EXIF metadata, and exports a structured Excel workbook with the same column layout and styling as the reference file.
 
 ## Features
 
-- Loads coordinate records from CSV files in the `coords/` folder
-- Parses survey metadata such as day, transect, point ID, date, and time
+- Loads coordinate records from CSV files in the coordinates folder. Accept CSV or KML files
+- Parses survey metadata such as day, transect, point ID, date, and time. Must be consistent across photos
 - Converts latitude/longitude into UTM coordinates with automatic zone detection
 - Renames and copies photos into `output/organized_photos/<transect>/`
 - Extracts EXIF metadata including camera model, shutter speed, aperture, ISO, and white balance
-- Exports a workbook named `output/Survey_Organized.xlsx`
+- Exports a workbook named `output/Survey_Organized.xlsx` can be configured accordingly
 
-## Repository layout
+## Proposed Repository layout
 
 - `Photos/` — source photos to be organized
 - `coords/` — waypoint/GPS CSV files
