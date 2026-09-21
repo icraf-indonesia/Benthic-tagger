@@ -248,7 +248,15 @@ def load_coordinates(
     coords_path = Path(coords_dir)
     records: Dict[Tuple[str, int], CoordinateRecord] = {}
 
-    for csv_file in sorted(coords_path.glob("*.csv")):
+    if not coords_path.exists():
+        return records
+
+    csv_files = sorted([
+        f for f in coords_path.iterdir()
+        if f.is_file() and f.suffix.lower() == ".csv"
+    ])
+
+    for csv_file in csv_files:
         location, day = parse_coord_filename(csv_file.name)
         with open(csv_file, mode="r", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
@@ -427,6 +435,20 @@ def extract_photo_metadata(path: Path) -> PhotoMetadata:
     )
 
 
+def safe_copy_file(src: Path, dst: Path, copy_mode: str = "copy") -> None:
+    """Copy or link file with graceful fallback for FUSE filesystems (e.g. Google Drive in Colab)."""
+    if copy_mode == "hardlink":
+        try:
+            dst.hardlink_to(src)
+            return
+        except OSError:
+            pass
+    try:
+        shutil.copy2(src, dst)
+    except OSError:
+        shutil.copy(src, dst)
+
+
 def organize_photos(
     photos_dir: str | Path = "Photos",
     coords_dir: str | Path = "coords",
@@ -480,6 +502,12 @@ def organize_photos(
     col_x, col_y = get_utm_columns(active_zone, active_band, utm_format)
     columns = build_column_list(active_zone, active_band, utm_format)
 
+    if not photos_path.exists():
+        raise FileNotFoundError(
+            f"Photos directory '{photos_path}' does not exist. "
+            "Please check the path or ensure photos are uploaded/mounted."
+        )
+
     photo_files = sorted([
         p for p in photos_path.iterdir()
         if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
@@ -500,13 +528,7 @@ def organize_photos(
         dest_photo_path = transect_folder / photo_meta.renamed_filename
 
         if not dest_photo_path.exists():
-            if copy_mode == "hardlink":
-                try:
-                    dest_photo_path.hardlink_to(photo_meta.source_path)
-                except OSError:
-                    shutil.copy2(photo_meta.source_path, dest_photo_path)
-            else:
-                shutil.copy2(photo_meta.source_path, dest_photo_path)
+            safe_copy_file(photo_meta.source_path, dest_photo_path, copy_mode=copy_mode)
 
         rel_photo_path = os.path.relpath(dest_photo_path, output_path).replace("\\", "/")
         photo_url = f"{url_prefix.rstrip('/')}/{photo_meta.renamed_filename}" if url_prefix else rel_photo_path
