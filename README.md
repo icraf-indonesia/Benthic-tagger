@@ -4,7 +4,7 @@ This repository organizes marine survey photos by transect and point, matches th
 
 ## Features
 
-- Loads coordinate records from CSV files in the coordinates folder. Accept CSV or KML files
+- Loads coordinate records from CSV files in the coordinates folder. Accept CSV files
 - Parses survey metadata such as day, transect, point ID, date, and time. Must be consistent across photos
 - Converts latitude/longitude into UTM coordinates with automatic zone detection
 - Renames and copies photos into `output/organized_photos/<transect>/`
@@ -14,7 +14,7 @@ This repository organizes marine survey photos by transect and point, matches th
 ## Proposed Repository layout
 
 - `Photos/` — source photos to be organized
-- `coords/` — waypoint/GPS CSV files
+- `coords/` — GPS CSV files
 - `output/` — generated organized photos and Excel report
 - `photo_coordinate_organizer.py` — main processing logic
 - `photo_coordinate_organizer.ipynb` — interactive notebook workflow
@@ -78,6 +78,28 @@ Open `photo_coordinate_organizer.ipynb` and run the cells in order:
 3. Inspect photos and EXIF metadata
 4. Run organization and Excel generation
 5. Preview generated table
+
+### Google Colab
+
+```python
+!pip install -e .
+```
+
+For persistent input and output, mount Google Drive and point the notebook paths
+at folders in Drive:
+
+```python
+from google.colab import drive
+from pathlib import Path
+
+drive.mount('/content/drive')
+PHOTOS_DIR = Path('/content/drive/MyDrive/Photos')
+COORDS_DIR = Path('/content/drive/MyDrive/coords')
+OUTPUT_DIR = Path('/content/drive/MyDrive/output')
+```
+
+Use `copy_mode='copy'` in Colab. Hardlinks are not generally supported by
+Google Drive-backed filesystems; the code falls back to copying when possible.
 
 ## Notes
 

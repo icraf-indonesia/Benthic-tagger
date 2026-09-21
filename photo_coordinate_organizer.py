@@ -436,17 +436,24 @@ def extract_photo_metadata(path: Path) -> PhotoMetadata:
 
 
 def safe_copy_file(src: Path, dst: Path, copy_mode: str = "copy") -> None:
-    """Copy or link file with graceful fallback for FUSE filesystems (e.g. Google Drive in Colab)."""
-    if copy_mode == "hardlink":
+    """Copy or link a file, falling back when hardlinks are unsupported."""
+    if copy_mode == "copy":
         try:
-            dst.hardlink_to(src)
-            return
+            shutil.copy2(src, dst)
         except OSError:
-            pass
+            shutil.copy(src, dst)
+        return
+
+    if copy_mode != "hardlink":
+        raise ValueError("copy_mode must be 'copy' or 'hardlink'")
+
     try:
-        shutil.copy2(src, dst)
+        dst.hardlink_to(src)
     except OSError:
-        shutil.copy(src, dst)
+        try:
+            shutil.copy2(src, dst)
+        except OSError:
+            shutil.copy(src, dst)
 
 
 def organize_photos(
