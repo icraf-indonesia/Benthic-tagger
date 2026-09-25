@@ -28,6 +28,7 @@ except ImportError as error:
 
 try:
     import openpyxl
+    from openpyxl.drawing.image import Image as OpenpyxlImage
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
 except ImportError as error:
@@ -590,7 +591,7 @@ def export_excel_workbook(
     output_file: Path,
     columns: Optional[List[str]] = None,
 ) -> None:
-    """Generate the formatted Excel workbook matching Example.xlsx styling."""
+    """Generate the formatted Excel workbook with embedded photo thumbnails."""
     if columns is None:
         columns = build_column_list()
 
@@ -625,6 +626,8 @@ def export_excel_workbook(
             cell.fill = accent_fill
 
     for row_idx, record in enumerate(records, start=2):
+        ws.row_dimensions[row_idx].height = 80
+
         for col_idx, col_name in enumerate(columns, start=1):
             val = record.get(col_name)
             cell = ws.cell(row=row_idx, column=col_idx, value=val)
@@ -641,6 +644,24 @@ def export_excel_workbook(
                     cell.alignment = Alignment(horizontal="left", vertical="center")
             elif col_idx in (17, 18):
                 cell.alignment = Alignment(horizontal="left", vertical="center")
+                if col_name == "Photo":
+                    day_match = re.match(r"(D\d+)", str(record.get("ID Titik", "")), re.IGNORECASE)
+                    transect = record.get("ID Transek", "T1")
+                    filename = record.get("File name", "")
+                    photo_path = (
+                        output_file.parent
+                        / "organized_photos"
+                        / f"{day_match.group(1).upper() if day_match else 'D1'}{transect}"
+                        / str(filename)
+                    )
+                    if photo_path.is_file():
+                        try:
+                            image = OpenpyxlImage(photo_path)
+                            image.width, image.height = _thumbnail_dimensions(photo_path, 100, 100)
+                            cell.value = None
+                            ws.add_image(image, f"{get_column_letter(col_idx)}{row_idx}")
+                        except Exception:
+                            pass
             else:
                 cell.fill = accent_fill
                 if col_name in ("Model", "Annotation/Interpretation"):
@@ -655,6 +676,15 @@ def export_excel_workbook(
 
     ws.freeze_panes = "A2"
     wb.save(output_file)
+
+
+def _thumbnail_dimensions(path: Path, max_width: int, max_height: int) -> Tuple[int, int]:
+    """Return image dimensions scaled to fit within the requested bounds."""
+    with Image.open(path) as source:
+        width, height = source.size
+
+    scale = min(max_width / width, max_height / height, 1)
+    return max(1, round(width * scale)), max(1, round(height * scale))
 
 
 def main() -> None:
