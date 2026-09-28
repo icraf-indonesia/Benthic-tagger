@@ -773,7 +773,7 @@ def export_excel_workbook(
             cell.fill = accent_fill
 
     for row_idx, record in enumerate(records, start=2):
-        ws.row_dimensions[row_idx].height = 80
+        ws.row_dimensions[row_idx].height = 450
 
         for col_idx, col_name in enumerate(columns, start=1):
             val = record.get(col_name)
@@ -798,7 +798,7 @@ def export_excel_workbook(
                         try:
                             import io
                             with Image.open(photo_path) as src_im:
-                                w, h = _thumbnail_dimensions(photo_path, 100, 100)
+                                w, h = _thumbnail_dimensions(photo_path, 800, 600)
                                 thumb = src_im.convert("RGB")
                                 thumb.thumbnail((w, h))
                                 img_buf = io.BytesIO()
