@@ -45,6 +45,7 @@ python photo_coordinate_organizer.py \
   --coords coords \
   --output output \
   --team A \
+  --transect T1 \
   --copy-mode copy \
   --utm-zone auto \
   --utm-format MGRS
@@ -60,6 +61,7 @@ records, excel_file = organize_photos(
     coords_dir="coords",
     output_dir="output",
     team="A",
+    transect="T1",  # Optional: manually specify transect ID (e.g. 'T1', 'T2')
     copy_mode="copy",
     utm_zone="auto",
     utm_format="MGRS",
