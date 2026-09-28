@@ -342,12 +342,14 @@ def format_exposure_time(exp_val: Any) -> Optional[str]:
 def parse_photo_filename(
     path: Path,
     transect: Optional[str] = None,
+    photo_point_id_offset: int = 0,
 ) -> Tuple[str, str, Optional[int], Optional[int], str]:
     """Parse photo name like 'TK_DAY1_T0.JPG', 'TK_DAY1_T2.JPG', 'D1E1 (1).JPG', or 'D1T1 (2).JPG'.
 
     Parameters:
     - path: Path to the photo file.
     - transect: Optional manual Transect ID (e.g. 'T1', 'T2') to override filename parsing.
+    - photo_point_id_offset: Integer adjustment for photo point IDs (default: 0).
 
     Returns (day, transect, point_id, sequence, renamed_filename).
     E.g.
@@ -401,6 +403,9 @@ def parse_photo_filename(
         else:
             parsed_transect = "T1"
 
+    if point_id is not None:
+        point_id += photo_point_id_offset
+
     transect_final = parsed_transect
     sequence = point_id
 
@@ -412,9 +417,55 @@ def parse_photo_filename(
     return day, transect_final, point_id, sequence, renamed_filename
 
 
-def extract_photo_metadata(path: Path, transect: Optional[str] = None) -> PhotoMetadata:
+def infer_photo_point_id_offsets(
+    photo_files: List[Path],
+    coord_lookup: Dict[Tuple[str, int], CoordinateRecord],
+    transect: Optional[str] = None,
+) -> Dict[Path, int]:
+    """Infer a photo point-ID offset per day and return it for each photo.
+
+    If multiple offsets produce the same number of matches, prefer zero to avoid
+    changing IDs when the available data cannot establish an offset confidently.
+    """
+    photo_ids_by_day: Dict[str, set[int]] = {}
+    photo_days: Dict[Path, str] = {}
+    for photo_file in photo_files:
+        day, _, point_id, _, _ = parse_photo_filename(photo_file, transect=transect)
+        photo_days[photo_file] = day
+        if point_id is not None:
+            photo_ids_by_day.setdefault(day, set()).add(point_id)
+
+    coord_ids_by_day: Dict[str, set[int]] = {}
+    for day, point_id in coord_lookup:
+        coord_ids_by_day.setdefault(day, set()).add(point_id)
+
+    offsets_by_day: Dict[str, int] = {}
+    for day, photo_ids in photo_ids_by_day.items():
+        coord_ids = coord_ids_by_day.get(day, set())
+        offset_scores = {0: 0}
+        for photo_id in photo_ids:
+            for coord_id in coord_ids:
+                offset = coord_id - photo_id
+                offset_scores[offset] = offset_scores.get(offset, 0) + 1
+
+        best_score = max(offset_scores.values())
+        best_offsets = [offset for offset, score in offset_scores.items() if score == best_score]
+        offsets_by_day[day] = min(best_offsets, key=lambda offset: (offset != 0, abs(offset), offset))
+
+    return {photo_file: offsets_by_day.get(day, 0) for photo_file, day in photo_days.items()}
+
+
+def extract_photo_metadata(
+    path: Path,
+    transect: Optional[str] = None,
+    photo_point_id_offset: int = 0,
+) -> PhotoMetadata:
     """Extract EXIF and file metadata from a photo."""
-    day, transect, point_id, sequence, renamed_filename = parse_photo_filename(path, transect=transect)
+    day, transect, point_id, sequence, renamed_filename = parse_photo_filename(
+        path,
+        transect=transect,
+        photo_point_id_offset=photo_point_id_offset,
+    )
     file_size_bytes = os.path.getsize(path)
     file_size_str = f"{file_size_bytes / (1024 * 1024):.1f} MB"
 
@@ -531,6 +582,7 @@ def organize_photos(
     url_prefix: str = "",
     utm_zone: Optional[int | str] = None,
     utm_format: str = "MGRS",
+    photo_point_id_offset: int | str = 0,
 ) -> Tuple[List[Dict[str, Any]], Path]:
     """Main function to organize photos, link coordinates, and export Excel manifest.
 
@@ -548,6 +600,7 @@ def organize_photos(
     - utm_zone: Desired UTM Zone (e.g. 48 or 49 for Bangka Belitung, 51 for Sulawesi).
                 If None or 'auto', automatically determined from coordinates.
     - utm_format: 'MGRS' (e.g. X_UTM48M, matches Example.xlsx) or 'HEMISPHERE' (e.g. X_UTM48S).
+    - photo_point_id_offset: Integer adjustment, or 'auto' to infer it per day (default: 0).
 
     Returns:
     - Tuple of (records list, Path to generated Excel file).
@@ -597,11 +650,21 @@ def organize_photos(
         [p for p in photos_path.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS],
         key=lambda p: natural_sort_key(p.name),
     )
+    if isinstance(photo_point_id_offset, str) and photo_point_id_offset.strip().lower() == "auto":
+        photo_point_offsets = infer_photo_point_id_offsets(photo_files, coord_lookup, transect=transect)
+        fixed_photo_point_id_offset = 0
+    else:
+        photo_point_offsets = {}
+        fixed_photo_point_id_offset = int(photo_point_id_offset)
 
     records: List[Dict[str, Any]] = []
 
     for idx, photo_file in enumerate(photo_files, start=1):
-        photo_meta = extract_photo_metadata(photo_file, transect=transect)
+        photo_meta = extract_photo_metadata(
+            photo_file,
+            transect=transect,
+            photo_point_id_offset=photo_point_offsets.get(photo_file, fixed_photo_point_id_offset),
+        )
 
         coord = coord_lookup.get((photo_meta.day, photo_meta.point_id)) if photo_meta.point_id is not None else None
 
@@ -780,6 +843,11 @@ def main() -> None:
     parser.add_argument("--team", default="A", help="Survey team code (default: A)")
     parser.add_argument("--transect", "--transect-id", default=None, help="Manually override Transect ID (e.g. 'T1', 'T2')")
     parser.add_argument(
+        "--photo-point-id-offset",
+        default="0",
+        help="Integer adjustment or 'auto' to infer point ID offsets per day (default: 0)",
+    )
+    parser.add_argument(
         "--copy-mode",
         choices=["copy", "hardlink", "symlink", "none"],
         default="copy",
@@ -816,6 +884,7 @@ def main() -> None:
         url_prefix=args.url_prefix,
         utm_zone=args.utm_zone,
         utm_format=args.utm_format,
+        photo_point_id_offset=args.photo_point_id_offset,
     )
 
     print(f"[SUCCESS] Processed and organized {len(records)} photos.")

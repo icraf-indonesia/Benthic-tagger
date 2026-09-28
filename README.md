@@ -106,6 +106,7 @@ Google Drive-backed filesystems; the code falls back to copying when possible.
 ## Notes
 
 - The script intentionally leaves the annotation column empty for manual marine interpretation work.
+- Set `photo_point_id_offset="auto"` in `organize_photos()` or pass `--photo-point-id-offset auto` to infer offsets per survey day from coordinate matches. This supports zero-based and one-based photo folders in the same workflow. You can still provide an integer override; the default is `0`.
 - UTM conversion supports Indonesian survey areas such as Bangka Belitung and Sulawesi.
 - The default output uses the MGRS naming convention, such as `X_UTM48M`, `X_UTM51M`.
 
