@@ -773,7 +773,7 @@ def export_excel_workbook(
             cell.fill = accent_fill
 
     for row_idx, record in enumerate(records, start=2):
-        ws.row_dimensions[row_idx].height = 450
+        ws.row_dimensions[row_idx].height = 300
 
         for col_idx, col_name in enumerate(columns, start=1):
             val = record.get(col_name)
@@ -798,7 +798,7 @@ def export_excel_workbook(
                         try:
                             import io
                             with Image.open(photo_path) as src_im:
-                                w, h = _thumbnail_dimensions(photo_path, 800, 600)
+                                w, h = _thumbnail_dimensions(photo_path, 600, 400)
                                 thumb = src_im.convert("RGB")
                                 thumb.thumbnail((w, h))
                                 img_buf = io.BytesIO()
@@ -821,6 +821,9 @@ def export_excel_workbook(
         col_letter = get_column_letter(col[0].column)
         max_len = max(len(str(c.value or "")) for c in col)
         ws.column_dimensions[col_letter].width = max(max_len + 3, 11)
+
+    # Keep the embedded thumbnail inside the Photo column instead of letting it overlap adjacent cells.
+    ws.column_dimensions["Q"].width = 85
 
     ws.freeze_panes = "A2"
     wb.save(output_file)
