@@ -21,6 +21,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import mimetypes
+
 try:
     from PIL import Image, ExifTags
 except ImportError as error:
@@ -28,9 +30,17 @@ except ImportError as error:
 
 try:
     import openpyxl
+    import openpyxl.packaging.manifest as _oxml_manifest
     from openpyxl.drawing.image import Image as OpenpyxlImage
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
+
+    # Ensure .mpo and other image formats are recognized by openpyxl manifest in Python 3.10+
+    mimetypes.add_type("image/jpeg", ".mpo", strict=True)
+    if hasattr(_oxml_manifest, "mimetypes") and hasattr(_oxml_manifest.mimetypes, "types_map"):
+        if isinstance(_oxml_manifest.mimetypes.types_map, tuple):
+            _oxml_manifest.mimetypes.types_map[True][".mpo"] = "image/jpeg"
+            _oxml_manifest.mimetypes.types_map[False][".mpo"] = "image/jpeg"
 except ImportError as error:
     raise SystemExit("openpyxl is required: pip install openpyxl") from error
 
@@ -211,6 +221,11 @@ def latlon_to_utm(
     return round(x, 2), round(y, 2), zone, band
 
 
+def natural_sort_key(s: Any) -> List[Any]:
+    """Key for natural alphanumeric sorting (e.g. T1, T2, ..., T9, T10)."""
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", str(s))]
+
+
 def extract_number_from_text(text: str | None) -> Optional[int]:
     """Extract point number from text like 'Tanda tempat 1', 'Titik 2', 'Point 14'.
     Avoids matching transect markers such as 'Transek 2'.
@@ -227,12 +242,12 @@ def extract_number_from_text(text: str | None) -> Optional[int]:
 
 
 def parse_coord_filename(filename: str) -> Tuple[str, str]:
-    """Extract location name and day identifier from filename (e.g. 'Tandaigi_D1.csv')."""
+    """Extract location name and day identifier from filename (e.g. 'Belitung_Tj. Kelayang Day 1 .csv' or 'Tandaigi_D1.csv')."""
     stem = Path(filename).stem
-    match = re.search(r"^(.*?)[_-]?(D\d+)", stem, re.IGNORECASE)
+    match = re.search(r"^(.*?)[_\-\s]*(?:DAY|D)\s*(\d+)", stem, re.IGNORECASE)
     if match:
-        location = match.group(1).rstrip("_- ") or "Tandaigi"
-        day = match.group(2).upper()
+        location = match.group(1).rstrip("_- ") or "Belitung"
+        day = f"D{int(match.group(2))}"
         return location, day
     return stem, "D1"
 
@@ -324,45 +339,82 @@ def format_exposure_time(exp_val: Any) -> Optional[str]:
         return str(exp_val)
 
 
-def parse_photo_filename(path: Path) -> Tuple[str, str, Optional[int], Optional[int], str]:
-    """Parse photo name like 'D1E1 (1).JPG' or 'D1T1 (2).JPG'.
+def parse_photo_filename(
+    path: Path,
+    transect: Optional[str] = None,
+) -> Tuple[str, str, Optional[int], Optional[int], str]:
+    """Parse photo name like 'TK_DAY1_T0.JPG', 'TK_DAY1_T2.JPG', 'D1E1 (1).JPG', or 'D1T1 (2).JPG'.
+
+    Parameters:
+    - path: Path to the photo file.
+    - transect: Optional manual Transect ID (e.g. 'T1', 'T2') to override filename parsing.
 
     Returns (day, transect, point_id, sequence, renamed_filename).
-    E.g. 'D1E1 (1).JPG' -> day='D1', transect='T1', point_id=1, sequence=1, renamed='D1T1 (1).JPG'.
+    E.g.
+    - 'TK_DAY1_T0.JPG' -> day='D1', transect='T1', point_id=0, sequence=0, renamed='D1T1 (0).JPG'
+    - 'TK_DAY1_T2.JPG' -> day='D1', transect='T1', point_id=2, sequence=2, renamed='D1T1 (2).JPG'
+    - 'D1E1 (1).JPG'   -> day='D1', transect='T1', point_id=1, sequence=1, renamed='D1T1 (1).JPG'
     """
     stem = path.stem
     ext = path.suffix.upper()
 
-    day_match = re.search(r"D(\d+)", stem, re.IGNORECASE)
-    day = f"D{day_match.group(1)}" if day_match else "D1"
+    # 1. Extract Day (e.g. 'DAY1', 'Day_1', 'D1')
+    day_match = re.search(r"(?:DAY|D)\s*(\d+)", stem, re.IGNORECASE)
+    day = f"D{int(day_match.group(1))}" if day_match else "D1"
 
-    transect_match = re.search(r"[ET](\d+)", stem, re.IGNORECASE)
-    transect = f"T{transect_match.group(1)}" if transect_match else "T1"
+    # 2. Extract Point ID and Transect
+    point_id = None
+    parsed_transect = None
 
+    if transect:
+        # User specified manual transect (e.g. 'T1' or '1')
+        clean_t = str(transect).strip().upper()
+        parsed_transect = clean_t if clean_t.startswith("T") else f"T{clean_t}"
+    else:
+        # Check for explicit transect markers: e.g. 'TR1', 'TRANSEK1', 'EXP1', 'E1'
+        explicit_transect = re.search(r"(?:TR|TRANSE[CK]|EXP(?:EDITION)?|E)\s*(\d+)", stem, re.IGNORECASE)
+        if explicit_transect:
+            parsed_transect = f"T{int(explicit_transect.group(1))}"
+
+    # Check for point indicators:
+    # a. Parentheses: e.g. '(1)', '(2)'
     seq_match = re.search(r"\((\d+)\)", stem)
-    explicit_point = re.search(r"(?:P|TITIK|POINT)[ _-]?(\d+)", stem, re.IGNORECASE)
+    # b. Explicit words: e.g. 'Titik 2', 'Point 1', 'P2'
+    explicit_point = re.search(r"(?:TITIK|POINT|TANDA\s*TEMPAT|PT|P)\s*(\d+)", stem, re.IGNORECASE)
 
     if seq_match:
         point_id = int(seq_match.group(1))
-        sequence = point_id
     elif explicit_point:
         point_id = int(explicit_point.group(1))
-        sequence = point_id
     else:
-        point_id = None
-        sequence = None
+        # c. 'T<number>' format at boundary or preceded by underscore/hyphen/space: e.g. TK_DAY1_T0, TK_DAY1_T2, TK_DAY1_T10
+        t_point_match = re.search(r"(?:[_\-\s]|^)T(\d+)(?:[_\-\s]|$)", stem, re.IGNORECASE)
+        if t_point_match:
+            point_id = int(t_point_match.group(1))
+
+    # If transect not found via explicit markers or argument, check composite pattern like D1T2 (1) or default to T1
+    if parsed_transect is None:
+        t_match = re.search(r"D\d+([ET]\d+)", stem, re.IGNORECASE)
+        if t_match:
+            num = re.search(r"\d+", t_match.group(1)).group()
+            parsed_transect = f"T{int(num)}"
+        else:
+            parsed_transect = "T1"
+
+    transect_final = parsed_transect
+    sequence = point_id
 
     if point_id is not None:
-        renamed_filename = f"{day}{transect} ({point_id}){ext}"
+        renamed_filename = f"{day}{transect_final} ({point_id}){ext}"
     else:
-        renamed_filename = f"{day}{transect}_{stem}{ext}"
+        renamed_filename = f"{day}{transect_final}_{stem}{ext}"
 
-    return day, transect, point_id, sequence, renamed_filename
+    return day, transect_final, point_id, sequence, renamed_filename
 
 
-def extract_photo_metadata(path: Path) -> PhotoMetadata:
+def extract_photo_metadata(path: Path, transect: Optional[str] = None) -> PhotoMetadata:
     """Extract EXIF and file metadata from a photo."""
-    day, transect, point_id, sequence, renamed_filename = parse_photo_filename(path)
+    day, transect, point_id, sequence, renamed_filename = parse_photo_filename(path, transect=transect)
     file_size_bytes = os.path.getsize(path)
     file_size_str = f"{file_size_bytes / (1024 * 1024):.1f} MB"
 
@@ -438,6 +490,9 @@ def extract_photo_metadata(path: Path) -> PhotoMetadata:
 
 def safe_copy_file(src: Path, dst: Path, copy_mode: str = "copy") -> None:
     """Copy or link a file, falling back when hardlinks are unsupported."""
+    if copy_mode in ("none", "skip", "off"):
+        return
+
     if copy_mode == "copy":
         try:
             shutil.copy2(src, dst)
@@ -445,16 +500,24 @@ def safe_copy_file(src: Path, dst: Path, copy_mode: str = "copy") -> None:
             shutil.copy(src, dst)
         return
 
-    if copy_mode != "hardlink":
-        raise ValueError("copy_mode must be 'copy' or 'hardlink'")
-
-    try:
-        dst.hardlink_to(src)
-    except OSError:
+    if copy_mode == "hardlink":
         try:
-            shutil.copy2(src, dst)
+            dst.hardlink_to(src)
         except OSError:
-            shutil.copy(src, dst)
+            try:
+                shutil.copy2(src, dst)
+            except OSError:
+                shutil.copy(src, dst)
+        return
+
+    if copy_mode == "symlink":
+        try:
+            dst.symlink_to(src)
+        except OSError:
+            safe_copy_file(src, dst, copy_mode="copy")
+        return
+
+    raise ValueError(f"copy_mode must be 'copy', 'hardlink', 'symlink', or 'none' (got: {copy_mode!r})")
 
 
 def organize_photos(
@@ -462,7 +525,9 @@ def organize_photos(
     coords_dir: str | Path = "coords",
     output_dir: str | Path = "output",
     team: str = "A",
+    transect: Optional[str] = None,
     copy_mode: str = "copy",
+    embed_thumbnails: bool = False,
     url_prefix: str = "",
     utm_zone: Optional[int | str] = None,
     utm_format: str = "MGRS",
@@ -470,11 +535,15 @@ def organize_photos(
     """Main function to organize photos, link coordinates, and export Excel manifest.
 
     Parameters:
-    - photos_dir: Directory containing input photos (e.g. 'Photos')
+    - photos_dir: Directory containing input photos (e.g. 'Photos' or 'belting_photo')
     - coords_dir: Directory containing CSV coordinate files (e.g. 'coords')
     - output_dir: Directory where organized photos and Excel file will be placed
     - team: Team identifier for Column B (default: 'A')
-    - copy_mode: 'copy' to duplicate, 'hardlink' to link without consuming space
+    - transect: Optional manual Transect ID override (e.g. 'T1', 'T2')
+    - copy_mode: 'copy' to duplicate, 'hardlink'/'symlink' for zero-storage link,
+                 or 'none'/'skip' to leave photos in place without copying.
+    - embed_thumbnails: False (default) uses =IMAGE() formula for ultra-fast export;
+                        True physically embeds downscaled thumbnails into Excel.
     - url_prefix: Optional web URL prefix for Column R (URL).
     - utm_zone: Desired UTM Zone (e.g. 48 or 49 for Bangka Belitung, 51 for Sulawesi).
                 If None or 'auto', automatically determined from coordinates.
@@ -484,12 +553,17 @@ def organize_photos(
     - Tuple of (records list, Path to generated Excel file).
     """
     photos_path = Path(photos_dir)
+    # Gracefully fallback to belting_photo if default Photos folder does not exist
+    if not photos_path.exists() and str(photos_dir) == "Photos" and Path("belting_photo").exists():
+        photos_path = Path("belting_photo")
+
     coords_path = Path(coords_dir)
     output_path = Path(output_dir)
     organized_photos_dir = output_path / "organized_photos"
 
     output_path.mkdir(parents=True, exist_ok=True)
-    organized_photos_dir.mkdir(parents=True, exist_ok=True)
+    if copy_mode not in ("none", "skip", "off"):
+        organized_photos_dir.mkdir(parents=True, exist_ok=True)
 
     target_zone_int = None
     if utm_zone and str(utm_zone).lower() != "auto":
@@ -503,9 +577,11 @@ def organize_photos(
         bands = [pt.utm_band for pt in coord_lookup.values()]
         active_zone = target_zone_int or max(set(zones), key=zones.count)
         active_band = max(set(bands), key=bands.count)
+        default_location = next((pt.location for pt in coord_lookup.values() if pt.location), "Belitung")
     else:
         active_zone = target_zone_int or 51
         active_band = "M"
+        default_location = "Belitung"
 
     col_x, col_y = get_utm_columns(active_zone, active_band, utm_format)
     columns = build_column_list(active_zone, active_band, utm_format)
@@ -516,30 +592,36 @@ def organize_photos(
             "Please check the path or ensure photos are uploaded/mounted."
         )
 
-    photo_files = sorted([
-        p for p in photos_path.iterdir()
-        if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
-    ])
+    # Sort photos naturally (0, 1, 2, ..., 9, 10)
+    photo_files = sorted(
+        [p for p in photos_path.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS],
+        key=lambda p: natural_sort_key(p.name),
+    )
 
     records: List[Dict[str, Any]] = []
 
     for idx, photo_file in enumerate(photo_files, start=1):
-        photo_meta = extract_photo_metadata(photo_file)
+        photo_meta = extract_photo_metadata(photo_file, transect=transect)
 
-        coord = coord_lookup.get((photo_meta.day, photo_meta.point_id))
+        coord = coord_lookup.get((photo_meta.day, photo_meta.point_id)) if photo_meta.point_id is not None else None
 
         point_num_str = str(photo_meta.point_id) if photo_meta.point_id is not None else str(idx)
         id_titik = f"{photo_meta.day}{photo_meta.transect}-{point_num_str}"
 
-        transect_folder = organized_photos_dir / f"{photo_meta.day}{photo_meta.transect}"
-        transect_folder.mkdir(parents=True, exist_ok=True)
-        dest_photo_path = transect_folder / photo_meta.renamed_filename
-
-        if not dest_photo_path.exists():
-            safe_copy_file(photo_meta.source_path, dest_photo_path, copy_mode=copy_mode)
-
-        rel_photo_path = os.path.relpath(dest_photo_path, output_path).replace("\\", "/")
-        photo_url = f"{url_prefix.rstrip('/')}/{photo_meta.renamed_filename}" if url_prefix else rel_photo_path
+        if copy_mode in ("none", "skip", "off"):
+            dest_photo_path = photo_meta.source_path
+            rel_photo_path = os.path.relpath(dest_photo_path, output_path).replace("\\", "/")
+            photo_url = f"{url_prefix.rstrip('/')}/{photo_meta.original_filename}" if url_prefix else rel_photo_path
+            display_filename = photo_meta.original_filename
+        else:
+            transect_folder = organized_photos_dir / f"{photo_meta.day}{photo_meta.transect}"
+            transect_folder.mkdir(parents=True, exist_ok=True)
+            dest_photo_path = transect_folder / photo_meta.renamed_filename
+            if not dest_photo_path.exists():
+                safe_copy_file(photo_meta.source_path, dest_photo_path, copy_mode=copy_mode)
+            rel_photo_path = os.path.relpath(dest_photo_path, output_path).replace("\\", "/")
+            photo_url = f"{url_prefix.rstrip('/')}/{photo_meta.renamed_filename}" if url_prefix else rel_photo_path
+            display_filename = photo_meta.renamed_filename
 
         row_data = {
             # Columns A - P (Extracted from coordinate CSV)
@@ -547,16 +629,16 @@ def organize_photos(
             "Team": team,
             "ID Transek": photo_meta.transect,
             "ID Titik": id_titik,
-            "File name": photo_meta.renamed_filename,
-            "Tanggal": coord.survey_date if coord else (photo_meta.date_original or ""),
-            "Jam": coord.survey_time if coord else (photo_meta.time_original or ""),
+            "File name": display_filename,
+            "Tanggal": coord.survey_date if coord and coord.survey_date else (photo_meta.date_original or ""),
+            "Jam": coord.survey_time if coord and coord.survey_time else (photo_meta.time_original or ""),
             "Variasi Habitat": "?",
             "Kedalaman": coord.elevation if coord and coord.elevation else "?",
             "Range (m)": 0,
             "Azimuth": 90,
             "Latitude": coord.latitude if coord else None,
             "Longitude": coord.longitude if coord else None,
-            "Lokasi": coord.location if coord else "Tandaigi",
+            "Lokasi": coord.location if coord and coord.location else default_location,
             col_x: f"{coord.utm_x:.2f}" if coord else "",
             col_y: f"{coord.utm_y:.2f}" if coord else "",
 
@@ -576,12 +658,13 @@ def organize_photos(
             "Aperture": photo_meta.aperture,
             "ISO": photo_meta.iso,
             "WhiteBalance": photo_meta.white_balance,
+            "_source_path": str(dest_photo_path),
         }
 
         records.append(row_data)
 
     excel_file = output_path / "Survey_Organized.xlsx"
-    export_excel_workbook(records, excel_file, columns=columns)
+    export_excel_workbook(records, excel_file, columns=columns, embed_thumbnails=embed_thumbnails)
 
     return records, excel_file
 
@@ -590,8 +673,9 @@ def export_excel_workbook(
     records: List[Dict[str, Any]],
     output_file: Path,
     columns: Optional[List[str]] = None,
+    embed_thumbnails: bool = False,
 ) -> None:
-    """Generate the formatted Excel workbook with embedded photo thumbnails."""
+    """Generate the formatted Excel workbook with optional embedded photo thumbnails."""
     if columns is None:
         columns = build_column_list()
 
@@ -644,22 +728,23 @@ def export_excel_workbook(
                     cell.alignment = Alignment(horizontal="left", vertical="center")
             elif col_idx in (17, 18):
                 cell.alignment = Alignment(horizontal="left", vertical="center")
-                if col_name == "Photo":
-                    day_match = re.match(r"(D\d+)", str(record.get("ID Titik", "")), re.IGNORECASE)
-                    transect = record.get("ID Transek", "T1")
-                    filename = record.get("File name", "")
-                    photo_path = (
-                        output_file.parent
-                        / "organized_photos"
-                        / f"{day_match.group(1).upper() if day_match else 'D1'}{transect}"
-                        / str(filename)
-                    )
-                    if photo_path.is_file():
+                if col_name == "Photo" and embed_thumbnails:
+                    photo_path_str = record.get("_source_path", "")
+                    photo_path = Path(photo_path_str) if photo_path_str else None
+                    if photo_path and photo_path.is_file():
                         try:
-                            image = OpenpyxlImage(photo_path)
-                            image.width, image.height = _thumbnail_dimensions(photo_path, 100, 100)
-                            cell.value = None
-                            ws.add_image(image, f"{get_column_letter(col_idx)}{row_idx}")
+                            import io
+                            with Image.open(photo_path) as src_im:
+                                w, h = _thumbnail_dimensions(photo_path, 100, 100)
+                                thumb = src_im.convert("RGB")
+                                thumb.thumbnail((w, h))
+                                img_buf = io.BytesIO()
+                                thumb.save(img_buf, format="JPEG", quality=80)
+                                img_buf.seek(0)
+                                image = OpenpyxlImage(img_buf)
+                                image.width, image.height = w, h
+                                cell.value = None
+                                ws.add_image(image, f"{get_column_letter(col_idx)}{row_idx}")
                         except Exception:
                             pass
             else:
@@ -693,7 +778,19 @@ def main() -> None:
     parser.add_argument("--coords", default="coords", help="Path to coordinate CSV folder (default: coords)")
     parser.add_argument("--output", default="output", help="Output directory (default: output)")
     parser.add_argument("--team", default="A", help="Survey team code (default: A)")
-    parser.add_argument("--copy-mode", choices=["copy", "hardlink"], default="copy", help="File copy method")
+    parser.add_argument("--transect", "--transect-id", default=None, help="Manually override Transect ID (e.g. 'T1', 'T2')")
+    parser.add_argument(
+        "--copy-mode",
+        choices=["copy", "hardlink", "symlink", "none"],
+        default="copy",
+        help="File copy method: 'copy' (duplicate), 'hardlink'/'symlink' (0 space), or 'none' (leave in place)",
+    )
+    parser.add_argument(
+        "--embed-thumbnails",
+        action="store_true",
+        default=False,
+        help="Physically embed image thumbnails into Excel cells (default: False uses =IMAGE() formula)",
+    )
     parser.add_argument("--url-prefix", default="", help="Optional URL prefix for Google Drive or web hosting")
     parser.add_argument(
         "--utm-zone",
@@ -713,7 +810,9 @@ def main() -> None:
         coords_dir=args.coords,
         output_dir=args.output,
         team=args.team,
+        transect=args.transect,
         copy_mode=args.copy_mode,
+        embed_thumbnails=args.embed_thumbnails,
         url_prefix=args.url_prefix,
         utm_zone=args.utm_zone,
         utm_format=args.utm_format,
